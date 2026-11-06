@@ -1,0 +1,12 @@
+name = "edutraceug-extras-worker"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Runs every 15 minutes on 1 January (UTC) until every school is promoted.
+# Finished schools are skipped without any requests.
+[triggers]
+crons = ["*/15 * 1 1 *"]
+
+[[services]]
+binding = "MARKS_WORKER"
+service = "edutraceug-marks-worker"
