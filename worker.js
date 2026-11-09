@@ -682,6 +682,18 @@ function callMarks(env, path, token) {
   throw new HttpError(500, "Server misconfigured: MARKS_WORKER binding");
 }
 
+async function fetchPoints(env, schoolId, user, rosterId, termId) {
+  const base = `/schools/${enc(schoolId)}/points`;
+  const path = STAFF.includes(user.role)
+    ? `${base}/student/${enc(rosterId)}?termId=${enc(termId)}`
+    : user.role === "student" ? `${base}/me?termId=${enc(termId)}` : `${base}/child?termId=${enc(termId)}`;
+  try {
+    if (!env.POINTS_WORKER) return null;
+    const res = await env.POINTS_WORKER.fetch(`https://points.internal${path}`, { headers: { Authorization: `Bearer ${user.token}` } });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+}
+
 // ================================================================
 // 1. Report card
 // ================================================================
@@ -773,6 +785,11 @@ async function handleReportCard(request, env, schoolId, url) {
     report.rank = await computeRank(env, schoolId, report.term.id, termDoc || {}, classAtTerm, streamAtTerm, rosterId);
   }
 
+  const pc = parseClass(classAtTerm);
+  if (pc && !pc.previous && pc.level >= 5) {
+    report.points = await fetchPoints(env, schoolId, user, rosterId, report.term.id);
+  }
+
   if (url.searchParams.get("format") === "json") return json(report);
   return html(renderReportCard(report, school || {}));
 }
@@ -784,6 +801,8 @@ function renderReportCard(report, school) {
   const logo = school.logoUrl ? escapeHtml(school.logoUrl) : "";
   const t = report.term, s = report.student;
   const dense = report.subjects.length > 14 ? " dense" : "";
+  const pts = !cbc && report.points ? report.points : null;
+  const ptMap = new Map(pts ? pts.subjects.map((x) => [x.name, x]) : []);
 
   const chip = (a) => {
     if (a.status === "missing") return "";
@@ -801,13 +820,15 @@ function renderReportCard(report, school) {
     }
     const pct = sub.pct !== null && sub.pct !== undefined ? Number(sub.pct).toFixed(1) : "-";
     const grade = sub.grade ? escapeHtml(sub.grade.grade) : "-";
-    return `<tr><td class="subject">${escapeHtml(sub.name)}</td><td class="chips">${chips}</td><td class="final">${pct}</td><td class="final">${grade}</td></tr>`;
+    const pp = ptMap.get(sub.name);
+    const ptsCell = pts ? `<td class="final">${pp && pp.points !== null ? pp.points : "-"}</td>` : "";
+    return `<tr><td class="subject">${escapeHtml(sub.name)}</td><td class="chips">${chips}</td><td class="final">${pct}</td><td class="final">${grade}</td>${ptsCell}</tr>`;
   }).join("");
 
   const head = cbc
     ? `<tr><th class="l">Subject</th><th class="l">Assessments</th><th>Level</th></tr>`
-    : `<tr><th class="l">Subject</th><th class="l">Assessments</th><th>Total %</th><th>Grade</th></tr>`;
-  const cols = cbc ? 3 : 4;
+    : `<tr><th class="l">Subject</th><th class="l">Assessments</th><th>Total %</th><th>Grade</th>${pts ? "<th>Points</th>" : ""}</tr>`;
+  const cols = (cbc ? 3 : 4) + (pts ? 1 : 0);
 
   let summary;
   if (cbc) {
@@ -818,9 +839,12 @@ function renderReportCard(report, school) {
     summary =
       `<div><label>Overall</label><strong>${o.pct !== null && o.pct !== undefined ? Number(o.pct).toFixed(1) + "%" : "-"}</strong></div>` +
       `<div><label>Grade</label><strong>${o.grade ? escapeHtml(o.grade.grade) : "-"}</strong></div>` +
-      (report.rank && report.rank.position
-        ? `<div><label>Position</label><strong>${report.rank.position} of ${report.rank.total}</strong></div>`
-        : `<div><label>Subjects</label><strong>${report.subjects.length}</strong></div>`);
+      (pts
+        ? `<div><label>Total Points</label><strong>${pts.totalPoints}</strong></div>` +
+          (pts.position ? `<div><label>Position</label><strong>${pts.position} of ${pts.outOf}</strong></div>` : "")
+        : (report.rank && report.rank.position
+            ? `<div><label>Position</label><strong>${report.rank.position} of ${report.rank.total}</strong></div>`
+            : `<div><label>Subjects</label><strong>${report.subjects.length}</strong></div>`));
   }
 
   let legend = "";
@@ -909,7 +933,7 @@ td.final{font-weight:800;color:var(--primary)}
     <div><label>Gender</label><strong>${escapeHtml(s.gender || "-")}</strong></div>
   </div>
   <table class="${dense.trim()}">
-    <colgroup><col class="c-sub"><col>${cbc ? `<col class="c-num">` : `<col class="c-num"><col class="c-num">`}</colgroup>
+    <colgroup><col class="c-sub"><col>${cbc ? `<col class="c-num">` : `<col class="c-num"><col class="c-num">`}${pts ? `<col class="c-num">` : ""}</colgroup>
     <thead>${head}</thead>
     <tbody>${rows || `<tr><td colspan="${cols}" class="chips">No marks recorded for this term.</td></tr>`}</tbody>
   </table>
